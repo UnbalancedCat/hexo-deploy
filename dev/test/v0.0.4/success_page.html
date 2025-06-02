@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎉 Hexo Blog Docker 容器测试成功！</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px; 
+            line-height: 1.6;
+            color: #333;
+        }
+        .success {
+            background: #d4edda; 
+            color: #155724;
+            padding: 20px;
+            border-radius: 8px; 
+            border: 1px solid #c3e6cb;
+            margin: 20px 0;
+        }
+        .header {
+            text-align: center;
+            border-bottom: 2px solid #4CAF50;
+            padding-bottom: 20px;
+            margin-bottom: 30px;
+        }
+        .status-list {
+            list-style: none;
+            padding: 0;
+        }
+        .status-list li {
+            padding: 8px 0;
+            border-bottom: 1px solid #e9ecef;
+        }
+        .status-ok {
+            color: #28a745;
+            font-weight: bold;
+        }
+        code {
+            background: #f8f9fa;
+            padding: 2px 4px;
+            border-radius: 3px;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🎉 Hexo Blog Docker 容器测试成功！</h1>
+        <p>部署时间: <span id="time"></span></p>
+    </div>
+
+    <div class="success">
+        <h2>✅ 所有服务状态检查</h2>
+        <ul class="status-list">
+            <li><span class="status-ok">✅ Nginx Web服务器</span> - 正常运行，serving this page</li>
+            <li><span class="status-ok">✅ SSH服务器</span> - 端口22，支持密钥认证</li>
+            <li><span class="status-ok">✅ Git自动部署</span> - 钩子已配置，支持推送即部署</li>
+            <li><span class="status-ok">✅ 健康检查</span> - /health端点正常响应</li>
+            <li><span class="status-ok">✅ 中文支持</span> - UTF-8编码和中文locale配置</li>
+        </ul>
+    </div>
+
+    <div class="success">
+        <h2>📋 容器详细信息</h2>
+        <ul>
+            <li><strong>基础镜像</strong>: Ubuntu 22.04</li>
+            <li><strong>Web服务器</strong>: Nginx (用户: hexo)</li>
+            <li><strong>SSH端口</strong>: 22 (映射到主机2222)</li>
+            <li><strong>HTTP端口</strong>: 80 (映射到主机8080)</li>
+            <li><strong>部署目录</strong>: /home/www/hexo</li>
+            <li><strong>Git仓库</strong>: /home/hexo/hexo.git</li>
+        </ul>
+    </div>
+
+    <div class="success">
+        <h2>📖 使用说明</h2>
+        <ol>
+            <li><strong>SSH连接</strong>: <code>ssh -i hexo_key -p 2222 hexo@localhost</code></li>
+            <li><strong>Git部署</strong>: <code>git push hexo main</code></li>
+            <li><strong>访问网站</strong>: <code>http://localhost:8080</code></li>
+            <li><strong>健康检查</strong>: <code>http://localhost:8080/health</code></li>
+        </ol>
+    </div>
+
+    <div class="success">
+        <h2>🎯 测试结果</h2>
+        <p><strong>所有功能测试通过！</strong></p>
+        <p>Docker容器 <code>hexo-blog:v0.0.3-fixed</code> 已经成功构建并运行，包含：</p>
+        <ul>
+            <li>安全的SSH服务器配置（仅支持密钥认证）</li>
+            <li>高性能的Nginx Web服务器</li>
+            <li>自动化的Git部署钩子</li>
+            <li>完整的中文支持和时区配置</li>
+            <li>健康检查和监控端点</li>
+        </ul>
+    </div>
+
+    <script>
+        document.getElementById("time").textContent = new Date().toLocaleString("zh-CN", {
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit"
+        });
+    </script>
+</body>
+</html>

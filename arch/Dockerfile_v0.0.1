@@ -1,0 +1,202 @@
+# ---- Stage 1: Builder/Base ----
+
+# This stage sets up the base environment, installs build tools, creates scripts and templates
+
+FROM ubuntu:22.04 AS builder
+
+
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+ENV TZ=Asia/Shanghai
+
+
+
+# Set the timezone
+
+RUN ln -sf /usr/share/zoneinfo/$TZ /etc/localtime && \
+    echo $TZ > /etc/timezone
+
+
+
+# Install all required packages in a single layer
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        locales \
+        git \
+        nginx-full \
+        gettext-base && \
+    sed -i 's/# zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen && \
+    locale-gen && \
+    update-locale LANG=zh_CN.UTF-8 && \
+    rm -rf /var/lib/apt/lists/*
+
+
+
+# Create non-root user for security
+
+RUN groupadd -r hexo && useradd -r -g hexo -d /home/hexo -s /bin/bash hexo
+
+
+
+# Make essential directories for artifacts
+
+RUN mkdir -p /etc/container/templates && \
+    mkdir -p /app && \
+    mkdir -p /home/hexo
+
+
+
+# Configure git hook with proper permissions
+
+RUN git init --bare /home/hexo/hexo.git && \
+    echo "#!/bin/bash" > /home/hexo/hexo.git/hooks/post-receive && \
+    echo "git --work-tree=/home/www/hexo --git-dir=/home/hexo/hexo.git checkout -f" >> /home/hexo/hexo.git/hooks/post-receive && \
+    echo "chown -R hexo:hexo /home/www/hexo" >> /home/hexo/hexo.git/hooks/post-receive && \
+    chmod +x /home/hexo/hexo.git/hooks/post-receive && \
+    chown -R hexo:hexo /home/hexo/hexo.git
+
+
+
+# Backup original nginx.conf
+
+RUN cp /etc/nginx/nginx.conf /etc/nginx/nginx.conf.bak
+
+
+
+# Create improved SSH Config Template using multiple echo commands
+
+RUN echo 'Port ${SSH_PORT:-22}' > /etc/container/templates/sshd_config.template && \
+    echo 'ListenAddress 0.0.0.0' >> /etc/container/templates/sshd_config.template && \
+    echo 'ListenAddress ::' >> /etc/container/templates/sshd_config.template && \
+    echo 'PermitRootLogin ${PERMIT_ROOT_LOGIN:-no}' >> /etc/container/templates/sshd_config.template && \
+    echo 'PubkeyAuthentication yes' >> /etc/container/templates/sshd_config.template && \
+    echo 'AuthorizedKeysFile .ssh/authorized_keys' >> /etc/container/templates/sshd_config.template && \
+    echo 'PasswordAuthentication no' >> /etc/container/templates/sshd_config.template && \
+    echo 'ChallengeResponseAuthentication no' >> /etc/container/templates/sshd_config.template && \
+    echo 'UsePAM yes' >> /etc/container/templates/sshd_config.template && \
+    echo 'X11Forwarding no' >> /etc/container/templates/sshd_config.template && \
+    echo 'PrintMotd no' >> /etc/container/templates/sshd_config.template && \
+    echo 'AcceptEnv LANG LC_*' >> /etc/container/templates/sshd_config.template && \
+    echo 'Subsystem sftp /usr/lib/openssh/sftp-server' >> /etc/container/templates/sshd_config.template && \
+    echo 'AllowUsers hexo' >> /etc/container/templates/sshd_config.template
+
+
+
+# Create Nginx Config Template with security headers using printf
+
+RUN printf 'user ${NGINX_USER:-hexo};\nworker_processes ${NGINX_WORKERS:-auto};\npid /var/run/nginx.pid;\n\nevents {\n    worker_connections ${NGINX_CONNECTIONS:-1024};\n    use epoll;\n    multi_accept on;\n}\n\nhttp {\n    include /etc/nginx/mime.types;\n    default_type application/octet-stream;\n    \n    access_log /var/log/nginx/access.log;\n    error_log /var/log/nginx/error.log;\n    \n    sendfile on;\n    tcp_nopush on;\n    tcp_nodelay on;\n    keepalive_timeout 65;\n    types_hash_max_size 2048;\n    \n    add_header X-Frame-Options DENY;\n    add_header X-Content-Type-Options nosniff;\n    add_header X-XSS-Protection "1; mode=block";\n    \n    gzip on;\n    gzip_vary on;\n    gzip_proxied any;\n    gzip_comp_level 6;\n    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;\n\n    server {\n        listen ${HTTP_PORT:-80};\n        server_name ${SERVER_NAME:-localhost};\n        root ${WEB_ROOT:-/home/www/hexo};\n        index index.html index.htm;\n        \n        server_tokens off;\n        \n        location / {\n            try_files $uri $uri/ =404;\n        }\n        \n        location ~* \\.(jpg|jpeg|png|gif|ico|css|js)$ {\n            expires 1y;\n            add_header Cache-Control "public, immutable";\n        }\n    }\n}' > /etc/container/templates/nginx.conf.template
+
+
+
+# Create improved start script using printf for better formatting
+
+RUN printf '#!/bin/bash\n\nRED="\\033[0;31m"\nGREEN="\\033[0;32m"\nYELLOW="\\033[1;33m"\nBLUE="\\033[0;34m"\nNC="\\033[0m"\n\nLOG_DIR="/var/log/container"\nLOG_FILE="$LOG_DIR/services.log"\nMAX_LOG_SIZE=10485760\n\n_log() {\n    local level_color=$1\n    local level_name=$2\n    shift 2\n    echo -e "${level_color}[${level_name}]${NC} $(date \047+%%Y-%%m-%%d %%H:%%M:%%S\047) - $@"\n}\nlog_info() { _log "$BLUE" "INFO" "$@"; }\nlog_success() { _log "$GREEN" "SUCCESS" "$@"; }\nlog_warning() { _log "$YELLOW" "WARNING" "$@"; }\nlog_error() { _log "$RED" "ERROR" "$@"; }\n\nsetup_logging() {\n    mkdir -p "$LOG_DIR"\n    touch "$LOG_FILE"\n    log_info "Logging to console and $LOG_FILE"\n    exec > >(tee -a "$LOG_FILE") 2> >(tee -a "$LOG_FILE" >&2)\n}\n\nrender_config() {\n    log_info "Rendering configuration templates..."\n    local rendered=0\n    \n    if envsubst < /etc/container/templates/sshd_config.template > /etc/ssh/sshd_config; then\n        log_success "SSHD configuration rendered"; ((rendered++))\n    else \n        log_error "Failed to render SSHD configuration"; \n    fi\n    \n    if envsubst < /etc/container/templates/nginx.conf.template > /etc/nginx/nginx.conf; then\n        log_success "Nginx configuration rendered"; ((rendered++))\n    else \n        log_error "Failed to render Nginx configuration"; \n    fi\n    \n    if [ "$rendered" -eq 2 ]; then \n        log_success "All configuration files rendered"\n        return 0\n    else \n        log_error "Failed to render some configuration files"\n        return 1\n    fi\n}\n\nstart_services() {\n    log_info "Starting SSH service..."\n    if [ ! -f "/etc/ssh/ssh_host_rsa_key" ]; then\n        log_info "Generating SSH host keys..."\n        ssh-keygen -A\n    fi\n    \n    /usr/sbin/sshd -D &\n    SSH_PID=$!\n    \n    log_info "Starting Nginx service..."\n    nginx -g "daemon off;" &\n    NGINX_PID=$!\n    \n    sleep 2\n    \n    if kill -0 $SSH_PID 2>/dev/null && kill -0 $NGINX_PID 2>/dev/null; then\n        log_success "All services started successfully"\n        return 0\n    else\n        log_error "Failed to start some services"\n        return 1\n    fi\n}\n\nmonitor_services() {\n    log_info "Starting service monitoring..."\n    while true; do\n        sleep 30\n        \n        if ! kill -0 $SSH_PID 2>/dev/null; then\n            log_error "SSH service stopped, attempting restart..."\n            /usr/sbin/sshd -D &\n            SSH_PID=$!\n        fi\n        \n        if ! kill -0 $NGINX_PID 2>/dev/null; then\n            log_error "Nginx service stopped, attempting restart..."\n            nginx -g "daemon off;" &\n            NGINX_PID=$!\n        fi\n    done\n}\n\ncleanup() {\n    log_info "Received shutdown signal, gracefully stopping services..."\n    \n    if [ ! -z "$NGINX_PID" ] && kill -0 $NGINX_PID 2>/dev/null; then\n        log_info "Stopping Nginx (PID:$NGINX_PID)"\n        kill -TERM $NGINX_PID\n        wait $NGINX_PID 2>/dev/null\n        log_success "Nginx stopped"\n    fi\n    \n    if [ ! -z "$SSH_PID" ] && kill -0 $SSH_PID 2>/dev/null; then\n        log_info "Stopping SSH (PID:$SSH_PID)"\n        kill -TERM $SSH_PID\n        wait $SSH_PID 2>/dev/null\n        log_success "SSH stopped"\n    fi\n    \n    log_info "Container shutdown complete"\n    exit 0\n}\n\ntrap cleanup SIGTERM SIGINT\n\nmain() {\n    setup_logging\n    log_info "===== Container Starting ====="\n    log_info "Time: $(date)"\n    log_info "Timezone: $TZ"\n    log_info "User: $(whoami)"\n    \n    if ! render_config; then\n        log_error "Configuration rendering failed"\n        exit 1\n    fi\n    \n    if ! /usr/sbin/sshd -t; then\n        log_error "SSH configuration test failed"\n        exit 1\n    fi\n    \n    if ! nginx -t; then\n        log_error "Nginx configuration test failed"\n        exit 1\n    fi\n    \n    if ! start_services; then\n        exit 1\n    fi\n    \n    log_success "===== All services started successfully ====="\n    monitor_services\n}\n\nmain' > /app/start.sh && \
+
+    chmod +x /app/start.sh
+
+
+
+# ---- Stage 2: Production ----
+
+# This stage builds the final runtime image with only necessary dependencies
+
+FROM ubuntu:22.04 AS production
+
+
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+ENV TZ=Asia/Shanghai
+
+ENV PUID=1000
+
+ENV PGID=1000
+
+ENV LANG=zh_CN.UTF-8
+
+
+
+# Copy timezone and locale settings from builder
+
+COPY --from=builder /etc/localtime /etc/localtime
+
+COPY --from=builder /etc/timezone /etc/timezone
+
+COPY --from=builder /usr/lib/locale/zh_CN.utf8 /usr/lib/locale/zh_CN.utf8/
+
+COPY --from=builder /etc/default/locale /etc/default/locale
+
+
+
+# Install only runtime dependencies
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        openssh-server \
+        git \
+        nginx-full \
+        gettext-base \
+        curl && \
+    rm -rf /var/lib/apt/lists/*
+
+
+
+# Create hexo user
+
+RUN groupadd -r hexo && \
+    useradd -r -g hexo -d /home/hexo -s /bin/bash hexo
+
+
+
+# Create necessary directories with secure permissions
+
+RUN mkdir -p /home/hexo/.ssh && \
+    mkdir -p /home/www/hexo && \
+    mkdir -p /home/www/ssl && \
+    mkdir -p /var/run/sshd && \
+    mkdir -p /var/log/container && \
+    mkdir -p /var/log/nginx
+
+
+
+# Copy artifacts from builder stage
+
+COPY --from=builder /home/hexo/hexo.git /home/hexo/hexo.git
+
+COPY --from=builder /etc/container/templates /etc/container/templates/
+
+COPY --from=builder /app/start.sh /root/start.sh
+
+COPY --from=builder /etc/nginx/nginx.conf.bak /etc/nginx/nginx.conf.bak
+
+
+
+# Set proper permissions for security
+
+RUN chmod +x /root/start.sh && \
+    chmod +x /home/hexo/hexo.git/hooks/post-receive && \
+    chown -R hexo:hexo /home/www/hexo && \
+    chown -R hexo:hexo /home/hexo && \
+    chmod -R 755 /home/www/hexo && \
+    chmod 700 /home/hexo/.ssh
+
+
+
+# Health check
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost/ || exit 1
+
+
+
+VOLUME ["/home/www/hexo", "/home/hexo/.ssh", "/home/www/ssl", "/home/hexo/hexo.git", "/var/log/container", "/var/log/nginx"]
+
+
+
+EXPOSE 22 80 443
+
+
+
+CMD ["/root/start.sh"]

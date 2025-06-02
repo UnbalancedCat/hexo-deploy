@@ -1,0 +1,225 @@
+# ================================
+# Docker Hexo Project .gitignore
+# ================================
+
+# ============ 敏感数据 ============
+# SSH 密钥 (私钥和公钥)
+**/ssh_keys/
+**/*_key
+**/*_key.pub
+**/authorized_keys
+**/known_hosts
+**/.ssh/
+
+# 环境变量和配置文件
+.env
+.env.local
+.env.production
+.env.staging
+**/*.key
+**/*.pem
+**/*.crt
+**/*.p12
+**/*.pfx
+
+# ============ 测试数据 ============
+# 测试生成的日志文件
+**/logs/*.log
+**/logs/*.txt
+**/logs/old/
+**/logs/old_*/
+
+# 测试数据目录
+**/test_data/
+**/test/*/test_data/
+**/hexo_site/
+**/test_blog/
+
+# 临时测试文件
+**/*_test_*.log
+**/*_test_*.txt
+**/*_report_*.txt
+**/*_report_*.log
+**/test_suite_*.log
+**/build_*.log
+**/functional_test_*.log
+**/log_rotation_test_*.log
+**/cleanup_*.log
+
+# ============ Docker 相关 ============
+# Docker 运行时数据
+.dockerignore.bak
+docker-compose.override.yml
+docker-compose.local.yml
+
+# 容器数据卷
+**/volumes/
+**/data/
+
+# ============ 系统文件 ============
+# Windows
+Thumbs.db
+Desktop.ini
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+
+# Linux
+*~
+.directory
+
+# ============ 编辑器和IDE ============
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# JetBrains IDEs
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+
+# ============ 临时文件 ============
+# 通用临时文件
+*.tmp
+*.temp
+*.bak
+*.backup
+*.old
+*.orig
+*.rej
+*.diff
+*.patch
+
+# 压缩文件 (如果是临时生成的)
+*.zip
+*.tar
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.rar
+*.7z
+
+# ============ 构建产物 ============
+# Node.js (如果使用)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm
+.yarn-integrity
+
+# Python (如果使用)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ============ 运行时数据 ============
+# 进程ID文件
+*.pid
+*.lock
+
+# 数据库文件
+*.db
+*.sqlite
+*.sqlite3
+
+# 缓存目录
+cache/
+.cache/
+tmp/
+
+# ============ 文档构建 ============
+# Hexo 生成的文件 (如果在本地测试)
+public/
+.deploy*/
+
+# GitBook
+_book/
+.grunt
+
+# ============ 特殊忽略 ============
+# 保留重要的示例文件但忽略实际配置
+!example.env
+!sample.config
+
+# 保留空目录的 .gitkeep 文件
+!.gitkeep
+
+# ============ 项目特定 ============
+# 测试运行时创建的文件
+**/hexo-test-*/
+**/test-container-*/
+
+# 备份文件
+**/backup_*/
+**/backups/
+
+# 性能测试结果
+**/benchmark_*/
+**/performance_*/
+
+# 用户特定配置
+user.config
+local.config
+personal.config
+
+# ============ 安全策略 ============
+# 确保不会意外提交密码或令牌
+*password*
+*secret*
+*token*
+*credential*
+*auth*
+
+# API 密钥文件
+api_keys.txt
+secrets.yml
+credentials.json
+
+# ============ 说明 ============
+# 此 .gitignore 文件旨在：
+# 1. 保护敏感的SSH密钥和认证信息
+# 2. 排除测试过程中生成的临时数据
+# 3. 忽略系统和编辑器产生的临时文件
+# 4. 防止意外提交大型或不必要的文件
+# 
+# 如需添加例外，请使用 !pattern 语法
+# 如需忽略特定文件，请添加完整路径

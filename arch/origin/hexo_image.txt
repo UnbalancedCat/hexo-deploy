@@ -1,0 +1,12 @@
+apt update && apt upgrade -y
+apt install -y systemctl
+apt install -y git vim gcc g++ nodejs npm nginx libnginx-mod-http-geoip2 ssh 
+
+/etc/nginx/
+/home/www/hexo/
+/home/ssl/
+
+
+/home/hexo.git/
+
+/root/.ssh

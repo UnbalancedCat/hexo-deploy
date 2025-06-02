@@ -1,0 +1,565 @@
+# Dockerfile v0.0.2 - Enhanced Hexo Deployment Container
+# Improvements:
+# - Enhanced readability with heredoc syntax for scripts
+# - Fixed PUID/PGID support for proper user/group mapping
+# - Intelligent log rotation with 10MB file size limit
+# - Optimized production image (removed vim, nodejs, npm)
+# - Enhanced security configurations (CSP headers, MaxAuthTries, ClientAlive)
+# - Dedicated health endpoint (/health)
+# - Improved post-receive hook with detailed logging
+# - Dynamic volume permission management
+
+# ---- Stage 1: Builder/Base ----
+# This stage sets up the base environment, installs build tools, creates scripts and templates
+
+FROM ubuntu:22.04 AS builder
+
+ARG TZ=Asia/Shanghai
+ARG PUID=1000
+ARG PGID=1000
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=${TZ}
+
+# Set the timezone
+RUN ln -sf /usr/share/zoneinfo/$TZ /etc/localtime && \
+    echo $TZ > /etc/timezone
+
+# Install all required packages in a single layer
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        locales \
+        git \
+        nginx-full \
+        gettext-base && \
+    sed -i 's/# zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen && \
+    locale-gen && \
+    update-locale LANG=zh_CN.UTF-8 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create directories for artifacts
+RUN mkdir -p /etc/container/templates && \
+    mkdir -p /app && \
+    mkdir -p /home/hexo
+
+# Configure git hook with improved logging using heredoc
+RUN git init --bare /home/hexo/hexo.git
+
+# Create enhanced post-receive hook with detailed logging
+RUN cat << 'EOF' > /home/hexo/hexo.git/hooks/post-receive
+#!/bin/bash
+
+# Enhanced post-receive hook with detailed logging
+LOG_FILE="/var/log/container/deployment.log"
+DEPLOY_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+
+log_deploy() {
+    echo "[$DEPLOY_TIME] $*" | tee -a "$LOG_FILE"
+}
+
+log_deploy "===== Starting Git Deployment ====="
+log_deploy "Deploy initiated by: $(whoami)"
+log_deploy "Git repository: $PWD"
+log_deploy "Target directory: /home/www/hexo"
+
+# Ensure target directory exists
+if [ ! -d "/home/www/hexo" ]; then
+    log_deploy "Creating target directory /home/www/hexo"
+    mkdir -p /home/www/hexo
+fi
+
+# Checkout files
+log_deploy "Checking out files..."
+if git --work-tree=/home/www/hexo --git-dir=/home/hexo/hexo.git checkout -f; then
+    log_deploy "Git checkout completed successfully"
+else
+    log_deploy "ERROR: Git checkout failed"
+    exit 1
+fi
+
+# Set proper ownership and permissions
+log_deploy "Setting file ownership and permissions..."
+if chown -R hexo:hexo /home/www/hexo; then
+    log_deploy "File ownership set successfully"
+else
+    log_deploy "WARNING: Failed to set file ownership"
+fi
+
+if chmod -R 755 /home/www/hexo; then
+    log_deploy "File permissions set successfully"
+else
+    log_deploy "WARNING: Failed to set file permissions"
+fi
+
+# Count deployed files
+FILE_COUNT=$(find /home/www/hexo -type f | wc -l)
+TOTAL_SIZE=$(du -sh /home/www/hexo 2>/dev/null | cut -f1)
+
+log_deploy "Deployment completed successfully"
+log_deploy "Files deployed: $FILE_COUNT"
+log_deploy "Total size: $TOTAL_SIZE"
+log_deploy "===== Git Deployment Finished ====="
+EOF
+
+RUN chmod +x /home/hexo/hexo.git/hooks/post-receive
+
+# Backup original nginx.conf
+RUN cp /etc/nginx/nginx.conf /etc/nginx/nginx.conf.bak
+
+# Create enhanced SSH Config Template with security improvements using heredoc
+RUN cat << 'EOF' > /etc/container/templates/sshd_config.template
+# Enhanced SSH Configuration with Security Hardening
+Port ${SSH_PORT:-22}
+ListenAddress 0.0.0.0
+ListenAddress ::
+
+# Authentication settings
+PermitRootLogin ${PERMIT_ROOT_LOGIN:-no}
+PubkeyAuthentication yes
+AuthorizedKeysFile .ssh/authorized_keys
+PasswordAuthentication no
+ChallengeResponseAuthentication no
+UsePAM yes
+
+# Security enhancements
+MaxAuthTries 3
+ClientAliveInterval 300
+ClientAliveCountMax 2
+LoginGraceTime 60
+MaxStartups 10:30:60
+
+# Disable unnecessary features
+X11Forwarding no
+AllowTcpForwarding no
+GatewayPorts no
+PermitTunnel no
+PrintMotd no
+
+# Environment and subsystem
+AcceptEnv LANG LC_*
+Subsystem sftp /usr/lib/openssh/sftp-server
+
+# User restrictions
+AllowUsers hexo
+EOF
+
+# Create enhanced Nginx Config Template with security headers and health endpoint using heredoc
+RUN cat << 'EOF' > /etc/container/templates/nginx.conf.template
+user ${NGINX_USER:-hexo};
+worker_processes ${NGINX_WORKERS:-auto};
+pid /var/run/nginx.pid;
+
+events {
+    worker_connections ${NGINX_CONNECTIONS:-1024};
+    use epoll;
+    multi_accept on;
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+    
+    # Logging
+    access_log /var/log/nginx/access.log;
+    error_log /var/log/nginx/error.log;
+    
+    # Performance optimizations
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    types_hash_max_size 2048;
+    
+    # Enhanced security headers
+    add_header X-Frame-Options DENY always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self';" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    
+    # Compression
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_types
+        text/plain
+        text/css
+        text/xml
+        text/javascript
+        application/json
+        application/javascript
+        application/xml+rss
+        application/atom+xml
+        image/svg+xml;
+
+    server {
+        listen ${HTTP_PORT:-80};
+        server_name ${SERVER_NAME:-localhost};
+        root ${WEB_ROOT:-/home/www/hexo};
+        index index.html index.htm;
+        
+        server_tokens off;
+        
+        # Main site location
+        location / {
+            try_files $uri $uri/ =404;
+        }
+        
+        # Dedicated health check endpoint
+        location /health {
+            access_log off;
+            return 200 "OK\n";
+            add_header Content-Type text/plain;
+        }
+        
+        # Static assets with caching
+        location ~* \.(jpg|jpeg|png|gif|ico|css|js|woff|woff2|ttf|eot|svg)$ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+            add_header Vary Accept-Encoding;
+        }
+        
+        # Security: deny access to hidden files
+        location ~ /\. {
+            deny all;
+            access_log off;
+            log_not_found off;
+        }
+    }
+}
+EOF
+
+# Create enhanced start script with heredoc for better readability and maintainability
+RUN cat << 'EOF' > /app/start.sh
+#!/bin/bash
+
+# Enhanced startup script with improved logging, error handling, and dynamic permissions
+# Version: 0.0.2
+
+# Color definitions for logging
+RED="\033[0;31m"
+GREEN="\033[0;32m"
+YELLOW="\033[1;33m"
+BLUE="\033[0;34m"
+NC="\033[0m"
+
+# Configuration
+LOG_DIR="/var/log/container"
+LOG_FILE="$LOG_DIR/services.log"
+MAX_LOG_SIZE=10485760  # 10MB
+
+# Logging functions
+_log() {
+    local level_color=$1
+    local level_name=$2
+    shift 2
+    echo -e "${level_color}[${level_name}]${NC} $(date '+%Y-%m-%d %H:%M:%S') - $*"
+}
+
+log_info() { _log "$BLUE" "INFO" "$@"; }
+log_success() { _log "$GREEN" "SUCCESS" "$@"; }
+log_warning() { _log "$YELLOW" "WARNING" "$@"; }
+log_error() { _log "$RED" "ERROR" "$@"; }
+
+# Setup logging with rotation
+setup_logging() {
+    mkdir -p "$LOG_DIR"
+    touch "$LOG_FILE"
+    
+    # Rotate log if it's too large
+    if [ -f "$LOG_FILE" ] && [ $(stat -c%s "$LOG_FILE" 2>/dev/null || echo 0) -gt $MAX_LOG_SIZE ]; then
+        log_info "Log file size exceeded ${MAX_LOG_SIZE} bytes, rotating..."
+        mv "$LOG_FILE" "${LOG_FILE}.old"
+        touch "$LOG_FILE"
+        log_info "Log rotation completed"
+    fi
+    
+    log_info "Logging to console and $LOG_FILE"
+    exec > >(tee -a "$LOG_FILE") 2> >(tee -a "$LOG_FILE" >&2)
+}
+
+# Apply dynamic PUID/PGID if different from defaults
+apply_dynamic_permissions() {
+    local current_uid=$(id -u hexo)
+    local current_gid=$(id -g hexo)
+    local target_uid=${PUID:-1000}
+    local target_gid=${PGID:-1000}
+    
+    if [ "$current_uid" != "$target_uid" ] || [ "$current_gid" != "$target_gid" ]; then
+        log_info "Applying dynamic user/group mapping: $current_uid:$current_gid -> $target_uid:$target_gid"
+        
+        # Update group if needed
+        if [ "$current_gid" != "$target_gid" ]; then
+            groupmod -g "$target_gid" hexo
+            log_info "Updated hexo group ID to $target_gid"
+        fi
+        
+        # Update user if needed
+        if [ "$current_uid" != "$target_uid" ]; then
+            usermod -u "$target_uid" hexo
+            log_info "Updated hexo user ID to $target_uid"
+        fi
+        
+        # Update ownership of important directories
+        log_info "Updating ownership of critical directories..."
+        chown -R hexo:hexo /home/hexo /home/www/hexo 2>/dev/null || true
+        log_success "Dynamic permissions applied successfully"
+    else
+        log_info "User/group IDs already match target values ($target_uid:$target_gid)"
+    fi
+}
+
+# Render configuration templates
+render_config() {
+    log_info "Rendering configuration templates..."
+    local rendered=0
+    
+    # Render SSH configuration
+    if envsubst < /etc/container/templates/sshd_config.template > /etc/ssh/sshd_config; then
+        log_success "SSH configuration rendered"
+        ((rendered++))
+    else
+        log_error "Failed to render SSH configuration"
+    fi
+    
+    # Render Nginx configuration
+    if envsubst < /etc/container/templates/nginx.conf.template > /etc/nginx/nginx.conf; then
+        log_success "Nginx configuration rendered"
+        ((rendered++))
+    else
+        log_error "Failed to render Nginx configuration"
+    fi
+    
+    if [ "$rendered" -eq 2 ]; then
+        log_success "All configuration files rendered successfully"
+        return 0
+    else
+        log_error "Failed to render some configuration files"
+        return 1
+    fi
+}
+
+# Start services
+start_services() {
+    log_info "Starting services..."
+    
+    # Generate SSH host keys if needed
+    if [ ! -f "/etc/ssh/ssh_host_rsa_key" ]; then
+        log_info "Generating SSH host keys..."
+        ssh-keygen -A
+        log_success "SSH host keys generated"
+    fi
+    
+    # Start SSH service
+    log_info "Starting SSH service..."
+    /usr/sbin/sshd -D &
+    SSH_PID=$!
+    
+    # Start Nginx service
+    log_info "Starting Nginx service..."
+    nginx -g "daemon off;" &
+    NGINX_PID=$!
+    
+    # Wait for services to start
+    sleep 3
+    
+    # Verify services are running
+    if kill -0 $SSH_PID 2>/dev/null && kill -0 $NGINX_PID 2>/dev/null; then
+        log_success "All services started successfully"
+        log_info "SSH PID: $SSH_PID"
+        log_info "Nginx PID: $NGINX_PID"
+        return 0
+    else
+        log_error "Failed to start some services"
+        return 1
+    fi
+}
+
+# Monitor services and restart if needed
+monitor_services() {
+    log_info "Starting service monitoring (30s intervals)..."
+    
+    while true; do
+        sleep 30
+        
+        # Check SSH service
+        if ! kill -0 $SSH_PID 2>/dev/null; then
+            log_error "SSH service stopped unexpectedly, attempting restart..."
+            /usr/sbin/sshd -D &
+            SSH_PID=$!
+            if kill -0 $SSH_PID 2>/dev/null; then
+                log_success "SSH service restarted successfully (PID: $SSH_PID)"
+            else
+                log_error "Failed to restart SSH service"
+            fi
+        fi
+        
+        # Check Nginx service
+        if ! kill -0 $NGINX_PID 2>/dev/null; then
+            log_error "Nginx service stopped unexpectedly, attempting restart..."
+            nginx -g "daemon off;" &
+            NGINX_PID=$!
+            if kill -0 $NGINX_PID 2>/dev/null; then
+                log_success "Nginx service restarted successfully (PID: $NGINX_PID)"
+            else
+                log_error "Failed to restart Nginx service"
+            fi
+        fi
+    done
+}
+
+# Graceful shutdown
+cleanup() {
+    log_info "Received shutdown signal, gracefully stopping services..."
+    
+    # Stop Nginx
+    if [ ! -z "$NGINX_PID" ] && kill -0 $NGINX_PID 2>/dev/null; then
+        log_info "Stopping Nginx (PID: $NGINX_PID)"
+        kill -TERM $NGINX_PID
+        wait $NGINX_PID 2>/dev/null
+        log_success "Nginx stopped gracefully"
+    fi
+    
+    # Stop SSH
+    if [ ! -z "$SSH_PID" ] && kill -0 $SSH_PID 2>/dev/null; then
+        log_info "Stopping SSH (PID: $SSH_PID)"
+        kill -TERM $SSH_PID
+        wait $SSH_PID 2>/dev/null
+        log_success "SSH stopped gracefully"
+    fi
+    
+    log_info "Container shutdown completed"
+    exit 0
+}
+
+# Main execution function
+main() {
+    setup_logging
+    
+    log_info "===== Hexo Container Starting (v0.0.2) ====="
+    log_info "Timestamp: $(date)"
+    log_info "Timezone: $TZ"
+    log_info "Current user: $(whoami)"
+    log_info "PUID: ${PUID:-1000}, PGID: ${PGID:-1000}"
+    
+    # Apply dynamic permissions
+    apply_dynamic_permissions
+    
+    # Render configurations
+    if ! render_config; then
+        log_error "Configuration rendering failed"
+        exit 1
+    fi
+    
+    # Test configurations
+    log_info "Testing configurations..."
+    if ! /usr/sbin/sshd -t; then
+        log_error "SSH configuration test failed"
+        exit 1
+    fi
+    log_success "SSH configuration test passed"
+    
+    if ! nginx -t; then
+        log_error "Nginx configuration test failed"
+        exit 1
+    fi
+    log_success "Nginx configuration test passed"
+    
+    # Start services
+    if ! start_services; then
+        log_error "Service startup failed"
+        exit 1
+    fi
+    
+    log_success "===== All services started successfully ====="
+    log_info "Container ready for connections"
+    log_info "SSH: Port ${SSH_PORT:-22}"
+    log_info "HTTP: Port ${HTTP_PORT:-80}"
+    log_info "Health check: http://localhost/health"
+    
+    # Start monitoring
+    monitor_services
+}
+
+# Set up signal handlers
+trap cleanup SIGTERM SIGINT
+
+# Start main execution
+main
+EOF
+
+RUN chmod +x /app/start.sh
+
+# ---- Stage 2: Production ----
+# This stage builds the final runtime image with only necessary dependencies
+
+FROM ubuntu:22.04 AS production
+
+ARG TZ=Asia/Shanghai
+ARG PUID=1000
+ARG PGID=1000
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=${TZ}
+ENV PUID=${PUID}
+ENV PGID=${PGID}
+ENV LANG=zh_CN.UTF-8
+
+# Copy timezone and locale settings from builder
+COPY --from=builder /etc/localtime /etc/localtime
+COPY --from=builder /etc/timezone /etc/timezone
+COPY --from=builder /usr/lib/locale/zh_CN.utf8 /usr/lib/locale/zh_CN.utf8/
+COPY --from=builder /etc/default/locale /etc/default/locale
+
+# Install only runtime dependencies (removed vim, nodejs, npm for minimal production image)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        openssh-server \
+        git \
+        nginx-full \
+        gettext-base \
+        curl \
+        ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create hexo user with proper PUID/PGID mapping
+RUN groupadd -g ${PGID} hexo && \
+    useradd -u ${PUID} -g hexo -d /home/hexo -s /bin/bash hexo
+
+# Create necessary directories with secure permissions
+RUN mkdir -p /home/hexo/.ssh && \
+    mkdir -p /home/www/hexo && \
+    mkdir -p /home/www/ssl && \
+    mkdir -p /var/run/sshd && \
+    mkdir -p /var/log/container && \
+    mkdir -p /var/log/nginx
+
+# Copy artifacts from builder stage
+COPY --from=builder /home/hexo/hexo.git /home/hexo/hexo.git
+COPY --from=builder /etc/container/templates /etc/container/templates/
+COPY --from=builder /app/start.sh /root/start.sh
+COPY --from=builder /etc/nginx/nginx.conf.bak /etc/nginx/nginx.conf.bak
+
+# Set proper permissions for security
+RUN chmod +x /root/start.sh && \
+    chmod +x /home/hexo/hexo.git/hooks/post-receive && \
+    chown -R hexo:hexo /home/www/hexo && \
+    chown -R hexo:hexo /home/hexo && \
+    chmod -R 755 /home/www/hexo && \
+    chmod 700 /home/hexo/.ssh && \
+    chmod 755 /var/log/container && \
+    chmod 755 /var/log/nginx
+
+# Enhanced health check using the dedicated /health endpoint
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD curl -f http://localhost/health || exit 1
+
+# Define volumes for persistent data
+VOLUME ["/home/www/hexo", "/home/hexo/.ssh", "/home/www/ssl", "/home/hexo/hexo.git", "/var/log/container", "/var/log/nginx"]
+
+# Expose ports
+EXPOSE 22 80 443
+
+# Set the startup command
+CMD ["/root/start.sh"]

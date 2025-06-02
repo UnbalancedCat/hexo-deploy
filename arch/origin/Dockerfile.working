@@ -1,0 +1,98 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Shanghai
+ENV LANG=zh_CN.UTF-8
+
+# Set timezone and locale
+RUN ln -sf /usr/share/zoneinfo/$TZ /etc/localtime && \
+    echo $TZ > /etc/timezone
+
+# Install packages
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        openssh-server \
+        git \
+        nginx-full \
+        gettext-base \
+        curl \
+        locales && \
+    sed -i 's/# zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen && \
+    locale-gen && \
+    update-locale LANG=zh_CN.UTF-8 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create hexo user for security
+RUN groupadd -r hexo && \
+    useradd -r -g hexo -d /home/hexo -s /bin/bash hexo
+
+# Create directories
+RUN mkdir -p /home/hexo/.ssh && \
+    mkdir -p /home/www/hexo && \
+    mkdir -p /home/www/ssl && \
+    mkdir -p /var/run/sshd && \
+    mkdir -p /var/log/container && \
+    mkdir -p /var/log/nginx && \
+    mkdir -p /etc/container/templates
+
+# Setup Git repository for deployment
+RUN git init --bare /home/hexo/hexo.git && \
+    echo '#!/bin/bash' > /home/hexo/hexo.git/hooks/post-receive && \
+    echo 'git --work-tree=/home/www/hexo --git-dir=/home/hexo/hexo.git checkout -f' >> /home/hexo/hexo.git/hooks/post-receive && \
+    echo 'chown -R hexo:hexo /home/www/hexo' >> /home/hexo/hexo.git/hooks/post-receive && \
+    chmod +x /home/hexo/hexo.git/hooks/post-receive
+
+# Create SSH config template
+RUN echo 'Port 22' > /etc/container/templates/sshd_config.template && \
+    echo 'PermitRootLogin no' >> /etc/container/templates/sshd_config.template && \
+    echo 'PubkeyAuthentication yes' >> /etc/container/templates/sshd_config.template && \
+    echo 'AuthorizedKeysFile .ssh/authorized_keys' >> /etc/container/templates/sshd_config.template && \
+    echo 'PasswordAuthentication no' >> /etc/container/templates/sshd_config.template && \
+    echo 'AllowUsers hexo' >> /etc/container/templates/sshd_config.template
+
+# Create Nginx config template
+RUN echo 'user hexo;' > /etc/container/templates/nginx.conf.template && \
+    echo 'worker_processes auto;' >> /etc/container/templates/nginx.conf.template && \
+    echo 'events { worker_connections 1024; }' >> /etc/container/templates/nginx.conf.template && \
+    echo 'http {' >> /etc/container/templates/nginx.conf.template && \
+    echo '  include /etc/nginx/mime.types;' >> /etc/container/templates/nginx.conf.template && \
+    echo '  server_tokens off;' >> /etc/container/templates/nginx.conf.template && \
+    echo '  add_header X-Frame-Options DENY;' >> /etc/container/templates/nginx.conf.template && \
+    echo '  server {' >> /etc/container/templates/nginx.conf.template && \
+    echo '    listen 80;' >> /etc/container/templates/nginx.conf.template && \
+    echo '    root /home/www/hexo;' >> /etc/container/templates/nginx.conf.template && \
+    echo '    index index.html;' >> /etc/container/templates/nginx.conf.template && \
+    echo '    location / { try_files $uri $uri/ =404; }' >> /etc/container/templates/nginx.conf.template && \
+    echo '  }' >> /etc/container/templates/nginx.conf.template && \
+    echo '}' >> /etc/container/templates/nginx.conf.template
+
+# Create startup script
+RUN echo '#!/bin/bash' > /root/start.sh && \
+    echo 'set -e' >> /root/start.sh && \
+    echo 'echo "Starting container..."' >> /root/start.sh && \
+    echo 'cp /etc/container/templates/sshd_config.template /etc/ssh/sshd_config' >> /root/start.sh && \
+    echo 'cp /etc/container/templates/nginx.conf.template /etc/nginx/nginx.conf' >> /root/start.sh && \
+    echo 'if [ ! -f "/etc/ssh/ssh_host_rsa_key" ]; then ssh-keygen -A; fi' >> /root/start.sh && \
+    echo '/usr/sbin/sshd -D &' >> /root/start.sh && \
+    echo 'nginx -g "daemon off;" &' >> /root/start.sh && \
+    echo 'wait' >> /root/start.sh && \
+    chmod +x /root/start.sh
+
+# Set proper permissions
+RUN chown -R hexo:hexo /home/hexo && \
+    chown -R hexo:hexo /home/www/hexo && \
+    chmod 700 /home/hexo/.ssh && \
+    chmod -R 755 /home/www/hexo
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost/ || exit 1
+
+# Volumes
+VOLUME ["/home/www/hexo", "/home/hexo/.ssh", "/home/www/ssl", "/home/hexo/hexo.git"]
+
+# Expose ports
+EXPOSE 22 80 443
+
+# Start services
+CMD ["/root/start.sh"]

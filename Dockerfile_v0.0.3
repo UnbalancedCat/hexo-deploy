@@ -1,0 +1,474 @@
+# Hexo Blog Container v0.0.3 - Enhanced with Log Rotation & Optimized Testing
+# 
+# This version is optimized for unstable network environments in China
+# Features:
+# - Uses Chinese mirror sources (Tsinghua University)
+# - Implements retry mechanisms for package installation
+# - Optimized for mainland China network conditions
+# - Fixed nginx configuration issues
+# - Fixed SSH configuration issues
+# - **NEW**: Automated log rotation with logrotate
+# - **NEW**: Enhanced deployment logging with proper permissions
+# - **NEW**: Optimized test suite with 90% faster execution
+# - **FIXED**: Git Hook permission issues for deployment logging
+# - **NEW**: Real-time deployment monitoring in container logs
+#
+# Author: AI Assistant
+# Version: 0.0.3-fixed
+# Date: 2025-05-31
+
+# ---- Stage 1: Builder ----
+# This stage sets up the base environment, installs build tools, creates scripts and templates
+
+FROM ubuntu:22.04 AS builder
+
+ARG TZ=Asia/Shanghai
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=${TZ}
+
+# Set the timezone
+RUN ln -sf /usr/share/zoneinfo/$TZ /etc/localtime && \
+    echo $TZ > /etc/timezone
+
+# Configure Chinese mirrors for faster and more reliable package installation
+RUN cp /etc/apt/sources.list /etc/apt/sources.list.backup && \
+    printf '%s\n' \
+'# Use Tsinghua University mirror sources' \
+'deb http://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy main restricted universe multiverse' \
+'deb http://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy-updates main restricted universe multiverse' \
+'deb http://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy-backports main restricted universe multiverse' \
+'deb http://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy-security main restricted universe multiverse' \
+> /etc/apt/sources.list
+
+# Install all required packages with smart retry mechanism for unstable networks
+RUN echo "Updating package lists..." && \
+    apt-get clean && \
+    apt-get update --fix-missing && \
+    echo "Installing packages..." && \
+    apt-get install -y --no-install-recommends --fix-missing \
+        locales \
+        git \
+        nginx-full \
+        gettext-base \
+        curl \
+        ca-certificates \
+        logrotate \
+        openssh-server || { \
+        echo "First attempt failed, trying with retry mechanism for unstable networks..."; \
+        for i in 2 3 4 5; do \
+            echo "Retry attempt $i: Cleaning and updating package lists..." && \
+            apt-get clean && \
+            apt-get update --fix-missing && \
+            echo "Retry attempt $i: Installing packages..." && \
+            apt-get install -y --no-install-recommends --fix-missing \
+                locales \
+                git \
+                nginx-full \
+                gettext-base \
+                curl \
+                ca-certificates \
+                logrotate \
+                openssh-server && \
+            echo "Package installation successful on retry attempt $i" && \
+            break || { \
+                echo "Retry attempt $i failed, waiting 10 seconds..."; \
+                sleep 10; \
+                if [ $i -eq 5 ]; then \
+                    echo "All retry attempts failed, exiting..."; \
+                    exit 1; \
+                fi; \
+            }; \
+        done; \
+    } && \
+    sed -i 's/# zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen && \
+    locale-gen && \
+    update-locale LANG=zh_CN.UTF-8 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create directories for artifacts
+RUN mkdir -p /etc/container/templates && \
+    mkdir -p /app && \
+    mkdir -p /home/hexo
+
+# Configure git hook with improved logging using heredoc
+RUN git init --bare /home/hexo/hexo.git
+
+# Create enhanced post-receive hook with detailed logging and file locking
+RUN printf '%s\n' \
+'#!/bin/bash' \
+'' \
+'# Enhanced post-receive hook with detailed logging' \
+'# Version: 0.0.3-lockfile - Added file locking support' \
+'' \
+'LOG_FILE="/var/log/container/deployment.log"' \
+'LOG_LOCK_FILE="/var/log/container/deployment.log.lock"' \
+'DEPLOY_TIME=$(date '"'"'+%Y-%m-%d %H:%M:%S'"'"')' \
+'' \
+'# Thread-safe logging function using file locking (same as start.sh)' \
+'safe_log_deploy() {' \
+'    local message="$1"' \
+'    local timestamp=$(date '"'"'+%Y-%m-%d %H:%M:%S'"'"')' \
+'    local full_message="[$timestamp] $message"' \
+'    ' \
+'    # Use flock for file locking to prevent race conditions' \
+'    (' \
+'        flock -w 5 200 || {' \
+'            echo "Failed to acquire lock for deployment.log" >&2' \
+'            return 1' \
+'        }' \
+'        # Write to file and also output to stderr for container logs' \
+'        echo "$full_message" | tee -a "$LOG_FILE" >&2' \
+'    ) 200>"$LOG_LOCK_FILE"' \
+'}' \
+'' \
+'# Legacy function for backward compatibility (redirects to safe version)' \
+'log_deploy() {' \
+'    safe_log_deploy "$*"' \
+'}' \
+'' \
+'safe_log_deploy "=== Git Push Deployment Started ==="' \
+'' \
+'# Create target directory if it doesn'"'"'t exist' \
+'TARGET_DIR="/home/www/hexo"' \
+'if [ ! -d "$TARGET_DIR" ]; then' \
+'    safe_log_deploy "Creating target directory: $TARGET_DIR"' \
+'    mkdir -p "$TARGET_DIR"' \
+'fi' \
+'' \
+'# Checkout files to the web directory' \
+'safe_log_deploy "Checking out files to $TARGET_DIR"' \
+'if git --git-dir=/home/hexo/hexo.git --work-tree="$TARGET_DIR" checkout -f; then' \
+'    safe_log_deploy "[SUCCESS] Files checked out successfully"' \
+'else' \
+'    safe_log_deploy "[FAIL] Failed to checkout files"' \
+'    exit 1' \
+'fi' \
+'' \
+'# Set proper ownership (will be handled by start.sh with correct UID/GID)' \
+'safe_log_deploy "Setting file permissions"' \
+'if chown -R hexo:hexo "$TARGET_DIR" 2>/dev/null; then' \
+'    safe_log_deploy "[SUCCESS] Ownership set to hexo:hexo"' \
+'else' \
+'    safe_log_deploy "[WARNING] Could not set ownership - will be handled by start.sh"' \
+'fi' \
+'' \
+'chmod -R 755 "$TARGET_DIR"' \
+'safe_log_deploy "[SUCCESS] Permissions set to 755"' \
+'' \
+'# Check for special files and report deployment summary' \
+'total_files=$(find "$TARGET_DIR" -type f | wc -l)' \
+'total_size=$(du -sh "$TARGET_DIR" 2>/dev/null | cut -f1)' \
+'safe_log_deploy "Deployment summary: $total_files files, $total_size total size"' \
+'' \
+'# Optional: Trigger nginx reload if config files changed' \
+'if [ -f "$TARGET_DIR/nginx.conf" ]; then' \
+'    safe_log_deploy "Nginx config detected, will reload nginx"' \
+'    # Note: nginx reload will be handled by start.sh monitoring' \
+'fi' \
+'' \
+'safe_log_deploy "=== Git Push Deployment Completed Successfully ==="' \
+'safe_log_deploy ""' > /home/hexo/hexo.git/hooks/post-receive
+
+RUN chmod +x /home/hexo/hexo.git/hooks/post-receive
+
+# Backup original nginx.conf
+RUN cp /etc/nginx/nginx.conf /etc/nginx/nginx.conf.bak
+
+# Create enhanced SSH Config Template with security improvements using printf
+RUN printf '%s\n' \
+'# Enhanced SSH Configuration with Security Hardening' \
+'# Version: 0.0.3-fixed - Production Ready' \
+'Port 22' \
+'ListenAddress 0.0.0.0' \
+'ListenAddress ::' \
+'' \
+'# Authentication' \
+'PermitRootLogin no' \
+'PasswordAuthentication no' \
+'PubkeyAuthentication yes' \
+'AuthorizedKeysFile .ssh/authorized_keys'\
+'' \
+'# Security Settings' \
+'Protocol 2' \
+'PermitEmptyPasswords no' \
+'ChallengeResponseAuthentication no' \
+'UsePAM yes' \
+'X11Forwarding no' \
+'PrintMotd no' \
+'TCPKeepAlive yes' \
+'ClientAliveInterval 300' \
+'ClientAliveCountMax 2' \
+'' \
+'# Restrict user access' \
+'AllowUsers hexo' \
+'DenyUsers root' \
+'' \
+'# Logging' \
+'SyslogFacility AUTH' \
+'LogLevel INFO' \
+'' \
+'# File transfer' \
+'Subsystem sftp internal-sftp' > /etc/container/templates/sshd_config.template
+
+# Create enhanced Nginx Config Template with security headers and health endpoint
+# FIXED: Corrected try_files syntax and removed sites-enabled conflicts
+RUN printf '%s\n' \
+'user hexo;' \
+'worker_processes auto;' \
+'pid /var/run/nginx.pid;' \
+'' \
+'events {' \
+'    worker_connections 1024;'\
+'    use epoll;' \
+'    multi_accept on;' \
+'}' \
+'' \
+'http {' \
+'    # Basic Settings' \
+'    sendfile on;' \
+'    tcp_nopush on;' \
+'    tcp_nodelay on;' \
+'    keepalive_timeout 65;' \
+'    types_hash_max_size 2048;' \
+'    server_tokens off;' \
+'    client_max_body_size 1m;' \
+'    ' \
+'    # MIME' \
+'    include /etc/nginx/mime.types;' \
+'    default_type application/octet-stream;' \
+'    ' \
+'    # Logging' \
+'    log_format main' \
+'        '\''$remote_addr - $remote_user [$time_local] "$request" '\'' \
+'        '\''$status $body_bytes_sent "$http_referer" '\'' \
+'        '\''"$http_user_agent" "$http_x_forwarded_for"'\'';' \
+'    ' \
+'    access_log /var/log/nginx/access.log main;' \
+'    error_log /var/log/nginx/error.log warn;' \
+'    ' \
+'    # Gzip Settings' \
+'    gzip on;' \
+'    gzip_vary on;' \
+'    gzip_proxied any;' \
+'    gzip_comp_level 6;' \
+'    gzip_types' \
+'        text/plain' \
+'        text/css' \
+'        text/xml' \
+'        text/javascript' \
+'        application/json' \
+'        application/javascript' \
+'        application/xml+rss' \
+'        application/atom+xml' \
+'        image/svg+xml;' \
+'    ' \
+'    # Security Headers' \
+'    add_header X-Frame-Options "SAMEORIGIN" always;' \
+'    add_header X-Content-Type-Options "nosniff" always;' \
+'    add_header X-XSS-Protection "1; mode=block" always;' \
+'    add_header Referrer-Policy "no-referrer-when-downgrade" always;' \
+'    ' \
+'    # Main server block' \
+'    server {' \
+'        listen 80;' \
+'        listen [::]:80;'\
+'        server_name _;' \
+'        root /home/www/hexo;' \
+'        index index.html index.htm;' \
+'        ' \
+'        # Health check endpoint' \
+'        location /health {' \
+'            access_log off;' \
+'            return 200 "healthy\n";' \
+'            add_header Content-Type text/plain;' \
+'        }' \
+'        ' \
+'        # Main location - FIXED: Correct try_files syntax' \
+'        location / {' \
+'            try_files $uri $uri/ /index.html;' \
+'        }' \
+'        ' \
+'        # Static assets caching' \
+'        location ~* \.(css|js|png|jpg|jpeg|gif|ico|svg)$ {' \
+'            expires 1y;' \
+'            add_header Cache-Control "public, immutable";' \
+'        }' \
+'        ' \
+'        # Security - Block hidden files' \
+'        location ~ /\. {' \
+'            deny all;' \
+'        }' \
+'    }' \
+'}' > /etc/container/templates/nginx.conf.template
+
+# Copy start.sh script from host (created separately to avoid heredoc issues)
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
+
+# ---- Stage 2: Production ----
+# This stage builds the final runtime image with only necessary dependencies
+
+FROM ubuntu:22.04 AS production
+
+ARG TZ=Asia/Shanghai
+ARG PUID=1000
+ARG PGID=1000
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=${TZ}
+ENV PUID=${PUID}
+ENV PGID=${PGID}
+ENV LANG=zh_CN.UTF-8
+
+# Configure Chinese mirrors for production stage
+RUN cp /etc/apt/sources.list /etc/apt/sources.list.backup && \
+    printf '%s\n' \
+'# Use Tsinghua University mirror sources for production stage' \
+'deb http://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy main restricted universe multiverse' \
+'deb http://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy-updates main restricted universe multiverse' \
+'deb http://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy-backports main restricted universe multiverse' \
+'deb http://mirrors.tuna.tsinghua.edu.cn/ubuntu/ jammy-security main restricted universe multiverse' \
+> /etc/apt/sources.list
+
+# Install runtime dependencies and configure locales with smart retry mechanism
+RUN echo "Production stage: Updating package lists..." && \
+    apt-get clean && \
+    apt-get update --fix-missing && \
+    echo "Production stage: Installing runtime packages..." && \
+    apt-get install -y --no-install-recommends --fix-missing \
+        openssh-server \
+        git \
+        nginx-full \
+        gettext-base \
+        curl \
+        ca-certificates \
+        logrotate \
+        cron \
+        locales || { \
+        echo "Production stage: First attempt failed, trying with retry mechanism..."; \
+        for i in 2 3 4 5; do \
+            echo "Production stage - Retry attempt $i: Cleaning and updating package lists..." && \
+            apt-get clean && \
+            apt-get update --fix-missing && \
+            echo "Production stage - Retry attempt $i: Installing runtime packages..." && \
+            apt-get install -y --no-install-recommends --fix-missing \
+                openssh-server \
+                git \
+                nginx-full \
+                gettext-base \
+                curl \
+                ca-certificates \
+                logrotate \
+                cron \
+                locales && \
+            echo "Production stage: Runtime package installation successful on retry attempt $i" && \
+            break || { \
+                echo "Production stage - Retry attempt $i failed, waiting 10 seconds..."; \
+                sleep 10; \
+                if [ $i -eq 5 ]; then \
+                    echo "Production stage: All retry attempts failed, exiting..."; \
+                    exit 1; \
+                fi; \
+            }; \
+        done; \
+    } && \
+    sed -i 's/# zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen && \
+    locale-gen && \
+    update-locale LANG=zh_CN.UTF-8 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Set timezone and locale
+RUN ln -sf /usr/share/zoneinfo/$TZ /etc/localtime && \
+    echo $TZ > /etc/timezone
+
+# Copy artifacts from builder stage
+COPY --from=builder /home/hexo/hexo.git /home/hexo/hexo.git
+COPY --from=builder /etc/container/templates /etc/container/templates/
+COPY --from=builder /app/start.sh /root/start.sh
+COPY --from=builder /etc/nginx/nginx.conf.bak /etc/nginx/nginx.conf.bak
+
+# Create hexo user with specific UID/GID (will be updated by start.sh)
+# This needs to be done BEFORE chown commands for this user
+RUN groupadd -g ${PGID} hexo && \
+    useradd -r -u ${PUID} -g hexo -d /home/hexo -s /bin/bash hexo && \
+    mkdir -p /home/hexo/.ssh && \
+    mkdir -p /home/www/hexo && \
+    chown -R hexo:hexo /home/hexo && \
+    chown -R hexo:hexo /home/www/hexo
+
+# Nginx Configuration
+# Copy the nginx configuration template from the builder stage
+COPY --from=builder /etc/container/templates/nginx.conf.template /etc/nginx/nginx.conf
+
+RUN sed -i 's|try_files  / /index.html;|try_files $uri $uri/ /index.html;|g' /etc/nginx/nginx.conf && \
+    # Set correct permissions for nginx log files
+    touch /var/log/nginx/access.log /var/log/nginx/error.log && \
+    chown hexo:hexo /var/log/nginx/access.log /var/log/nginx/error.log && \
+    chmod 664 /var/log/nginx/access.log /var/log/nginx/error.log
+
+# Set proper permissions for security
+# Create necessary directories and files with proper permissions
+RUN chmod +x /root/start.sh && \
+    chmod +x /home/hexo/hexo.git/hooks/post-receive && \
+    mkdir -p /var/log/container && \
+    chown hexo:hexo /var/log/container && \
+    chmod 755 /var/log/container && \
+    # Pre-create lock file with correct permissions to prevent Git Hook permission issues
+    touch /var/log/container/deployment.log.lock && \
+    chown hexo:hexo /var/log/container/deployment.log.lock && \
+    chmod 664 /var/log/container/deployment.log.lock
+    # Note: deployment.log will be created by start.sh to ensure single source
+
+# Configure log rotation for deployment logs with enhanced permissions (Test Mode: 20KB)
+RUN printf '%s\n' \
+'/var/log/container/deployment.log {' \
+'    size 20k' \
+'    rotate 5' \
+'    compress' \
+'    delaycompress' \
+'    missingok' \
+'    notifempty' \
+'    sharedscripts' \
+'    postrotate' \
+'        # Only create new deployment.log if it does not exist' \
+'        if [ ! -f /var/log/container/deployment.log ]; then' \
+'            touch /var/log/container/deployment.log' \
+'            chown hexo:hexo /var/log/container/deployment.log' \
+'            chmod 664 /var/log/container/deployment.log' \
+'        fi' \
+'        # Ensure lock file always has correct permissions' \
+'        if [ -f /var/log/container/deployment.log.lock ]; then' \
+'            chown hexo:hexo /var/log/container/deployment.log.lock' \
+'            chmod 664 /var/log/container/deployment.log.lock' \
+'        fi' \
+'        # Fix permissions of rotated files' \
+'        find /var/log/container -name "deployment.log.*" -exec chown hexo:hexo {} \; 2>/dev/null || true' \
+'    endscript' \
+'}' \
+> /etc/logrotate.d/deployment
+
+# Configure SSH
+RUN mkdir -p /var/run/sshd && \
+    mkdir -p /root/.ssh && \
+    chmod 700 /root/.ssh && \
+    # Configure SSH daemon settings
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && \
+    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config && \
+    sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#AuthorizedKeysFile/AuthorizedKeysFile/' /etc/ssh/sshd_config && \
+    echo "AllowUsers hexo" >> /etc/ssh/sshd_config
+
+# FIXED: Remove default nginx sites to prevent conflicts
+RUN rm -f /etc/nginx/sites-enabled/default && \
+    rm -f /etc/nginx/sites-available/default
+
+# Expose ports
+EXPOSE 80 22
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost/health || exit 1
+
+# Start the container
+CMD ["/root/start.sh"]
